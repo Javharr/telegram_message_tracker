@@ -1,6 +1,5 @@
 .venv/
 venv/
-config.py
 messages.db
 messages.db-journal
 *.db-wal
