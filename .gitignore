@@ -1,0 +1,11 @@
+.venv/
+venv/
+config.py
+messages.db
+messages.db-journal
+*.db-wal
+*.db-shm
+media/
+__pycache__/
+.idea/
+.DS_Store
