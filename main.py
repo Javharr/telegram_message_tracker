@@ -852,6 +852,9 @@ async def handle_features_command(
 async def handle_status_command(
     message: Message,
 ) -> None:
+    if not message.from_user:
+        return
+
     await message.answer(
         text=get_status_text(
             message.from_user.id
@@ -865,6 +868,9 @@ async def handle_status_command(
 async def handle_statistics_command(
     message: Message,
 ) -> None:
+    if not message.from_user:
+        return
+
     await message.answer(
         text=get_statistics_text(
             message.from_user.id
@@ -1117,20 +1123,72 @@ async def handle_business_message(
 
     sender_id = get_sender_id(message)
 
+    # ИСХОДЯЩЕЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА
     if sender_id == owner_user_id:
-        if (
-            message.reply_to_message
-            is not None
-            or message.external_reply
-            is not None
-        ):
+        reply = message.reply_to_message
+
+        if reply is not None:
+            reply_message_id = getattr(
+                reply,
+                "message_id",
+                None,
+            )
+
+            # Проверяем, было ли сообщение уже
+            # сохранено как обычное входящее.
+            if reply_message_id is not None:
+                saved_reply = get_message(
+                    business_connection_id=(
+                        connection_id
+                    ),
+                    chat_id=message.chat.id,
+                    message_id=reply_message_id,
+                )
+
+                # Если запись существует,
+                # это обычное сообщение.
+                #
+                # Фото, видео, голосовое, файл и т.д.
+                # повторно как одноразовое
+                # не отправляем.
+                if saved_reply is not None:
+                    logging.info(
+                        (
+                            "Reply %s -> %s: "
+                            "сообщение уже сохранено "
+                            "в БД. Обработка как "
+                            "одноразового пропущена."
+                        ),
+                        message.message_id,
+                        reply_message_id,
+                    )
+
+                    return
+
+            # В БД исходного сообщения нет.
+            # Пробуем извлечь медиа из reply.
             await try_extract_media_from_owner_reply(
                 message=message,
                 connection_id=connection_id,
                 owner_chat_id=owner_chat_id,
             )
 
+            return
+
+        # Telegram иногда может передать
+        # исходное сообщение через external_reply.
+        if message.external_reply is not None:
+            await try_extract_media_from_owner_reply(
+                message=message,
+                connection_id=connection_id,
+                owner_chat_id=owner_chat_id,
+            )
+
+        # Свои исходящие сообщения
+        # в БД не сохраняем.
         return
+
+    # ВХОДЯЩЕЕ СООБЩЕНИЕ СОБЕСЕДНИКА
 
     sender_name = get_sender_name(
         message
@@ -1140,6 +1198,9 @@ async def handle_business_message(
         message
     )
 
+    # Сначала создаём запись в БД.
+    # Благодаря этому обычное сообщение
+    # можно отличить от одноразового.
     save_message(
         business_connection_id=connection_id,
         chat_id=message.chat.id,
@@ -1152,6 +1213,7 @@ async def handle_business_message(
         created_at=current_time(),
     )
 
+    # Затем скачиваем обычное медиа.
     media_type, media_path = (
         await download_source_media(
             source=message,
@@ -1161,6 +1223,7 @@ async def handle_business_message(
         )
     )
 
+    # Обновляем запись путём к медиа.
     save_message(
         business_connection_id=connection_id,
         chat_id=message.chat.id,
