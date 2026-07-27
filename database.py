@@ -2,31 +2,49 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from config import MASTER_KEK
+from config import KEY_PART_A, KEY_PART_B_PATH
 from crypto import (
     decrypt_dek,
     decrypt_text,
+    derive_master_kek,
     encrypt_dek,
     encrypt_text,
     generate_dek,
-    key_from_base64,
 )
 
+
+# =========================================================
+# PATHS
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "messages.db"
 
-MASTER_KEK_BYTES = key_from_base64(MASTER_KEK)
+
+# =========================================================
+# MASTER KEK
+# =========================================================
+
+# KEY_PART_A берётся из .env
+# KEY_PART_B берётся из ~/.message_tracker/key.part
+
+KEY_PART_B = KEY_PART_B_PATH.read_bytes().strip()
+
+MASTER_KEK_BYTES = derive_master_kek(
+    KEY_PART_A,
+    KEY_PART_B,
+)
 
 
 # =========================================================
-# DATABASE HELPERS
+# DATABASE CONNECTION
 # =========================================================
 
 
 def get_connection() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
+
     return connection
 
 
@@ -107,6 +125,8 @@ def create_tables() -> None:
                 updated_at TEXT,
                 deleted_at TEXT,
 
+                reply_to_message_id INTEGER,
+
                 UNIQUE (
                     business_connection_id,
                     chat_id,
@@ -128,8 +148,8 @@ def migrate_database(
     connection: sqlite3.Connection,
 ) -> None:
     """
-    Добавляет encryption-колонки в старую messages.db
-    и шифрует существующие plaintext сообщения.
+    Добавляет encryption-поля в старую БД и
+    переносит старые plaintext сообщения в encrypted поля.
     """
 
     required_columns = {
@@ -137,9 +157,11 @@ def migrate_database(
         "sender_name_nonce": "BLOB",
         "encrypted_message_text": "BLOB",
         "message_text_nonce": "BLOB",
+        "reply_to_message_id": "INTEGER",
     }
 
     for column_name, column_type in required_columns.items():
+
         if not column_exists(
             connection,
             "messages",
@@ -159,8 +181,10 @@ def migrate_database(
             m.business_connection_id,
             m.sender_name,
             m.message_text,
+
             m.encrypted_sender_name,
             m.encrypted_message_text,
+
             bc.telegram_user_id
 
         FROM messages m
@@ -174,7 +198,9 @@ def migrate_database(
                 m.sender_name IS NOT NULL
                 AND m.encrypted_sender_name IS NULL
             )
+
             OR
+
             (
                 m.message_text IS NOT NULL
                 AND m.encrypted_message_text IS NULL
@@ -186,11 +212,13 @@ def migrate_database(
 
         telegram_user_id = row["telegram_user_id"]
 
+        # Если старое сообщение невозможно привязать
+        # к владельцу business connection — пропускаем.
         if telegram_user_id is None:
             continue
 
         dek = get_or_create_user_dek(
-            telegram_user_id,
+            int(telegram_user_id),
             connection=connection,
         )
 
@@ -201,6 +229,7 @@ def migrate_database(
         message_text_nonce = None
 
         if row["sender_name"] is not None:
+
             (
                 sender_name_nonce,
                 encrypted_sender_name,
@@ -210,6 +239,7 @@ def migrate_database(
             )
 
         if row["message_text"] is not None:
+
             (
                 message_text_nonce,
                 encrypted_message_text,
@@ -237,8 +267,10 @@ def migrate_database(
             (
                 encrypted_sender_name,
                 sender_name_nonce,
+
                 encrypted_message_text,
                 message_text_nonce,
+
                 row["id"],
             ),
         )
@@ -254,10 +286,10 @@ def get_or_create_user_dek(
     connection: sqlite3.Connection | None = None,
 ) -> bytes:
     """
-    У каждого Telegram-пользователя свой DEK.
+    Создаёт отдельный DEK для каждого пользователя.
 
-    В БД DEK никогда не хранится открытым.
-    Он зашифрован MASTER_KEK.
+    Открытый DEK никогда не сохраняется в БД.
+    В БД хранится только encrypted_dek.
     """
 
     own_connection = connection is None
@@ -268,6 +300,7 @@ def get_or_create_user_dek(
     assert connection is not None
 
     try:
+
         row = connection.execute(
             """
             SELECT
@@ -281,20 +314,23 @@ def get_or_create_user_dek(
             (telegram_user_id,),
         ).fetchone()
 
-        if row:
+        if row is not None:
+
             return decrypt_dek(
                 encrypted_dek=row["encrypted_dek"],
                 nonce=row["dek_nonce"],
                 master_kek=MASTER_KEK_BYTES,
             )
 
+        # Новый пользователь — создаём его DEK.
         dek = generate_dek()
 
-        dek_nonce, encrypted_dek_value = (
-            encrypt_dek(
-                dek,
-                MASTER_KEK_BYTES,
-            )
+        (
+            dek_nonce,
+            encrypted_dek_value,
+        ) = encrypt_dek(
+            dek,
+            MASTER_KEK_BYTES,
         )
 
         connection.execute(
@@ -319,6 +355,7 @@ def get_or_create_user_dek(
         return dek
 
     finally:
+
         if own_connection:
             connection.close()
 
@@ -326,6 +363,7 @@ def get_or_create_user_dek(
 def get_dek_by_connection_id(
     business_connection_id: str,
 ) -> bytes:
+
     with get_connection() as connection:
 
         row = connection.execute(
@@ -355,7 +393,7 @@ def get_dek_by_connection_id(
 
 
 # =========================================================
-# BUSINESS CONNECTION
+# BUSINESS CONNECTIONS
 # =========================================================
 
 
@@ -383,6 +421,7 @@ def save_business_connection(
             VALUES (?, ?, ?, ?, ?, ?)
 
             ON CONFLICT (connection_id)
+
             DO UPDATE SET
                 telegram_user_id =
                     excluded.telegram_user_id,
@@ -409,7 +448,7 @@ def save_business_connection(
             ),
         )
 
-        # Создаём отдельный DEK пользователю,
+        # Создаём пользовательский DEK,
         # если его ещё нет.
         get_or_create_user_dek(
             telegram_user_id,
@@ -435,10 +474,11 @@ def get_connection_owner_user_id(
             (connection_id,),
         ).fetchone()
 
-    return (
-        int(row["telegram_user_id"])
-        if row
-        else None
+    if row is None:
+        return None
+
+    return int(
+        row["telegram_user_id"]
     )
 
 
@@ -460,10 +500,11 @@ def get_connection_owner_chat_id(
             (connection_id,),
         ).fetchone()
 
-    return (
-        int(row["user_chat_id"])
-        if row
-        else None
+    if row is None:
+        return None
+
+    return int(
+        row["user_chat_id"]
     )
 
 
@@ -488,7 +529,10 @@ def get_user_connection(
             (user_chat_id,),
         ).fetchone()
 
-    return dict(row) if row else None
+    if row is None:
+        return None
+
+    return dict(row)
 
 
 def get_user_connection_ids(
@@ -515,7 +559,7 @@ def get_user_connection_ids(
 
 
 # =========================================================
-# MESSAGE ENCRYPTION
+# SAVE MESSAGE
 # =========================================================
 
 
@@ -529,19 +573,23 @@ def save_message(
     media_type: str | None,
     media_path: str | None,
     created_at: str,
+    reply_to_message_id: int | None = None,
 ) -> None:
 
     dek = get_dek_by_connection_id(
         business_connection_id
     )
 
-    sender_name_nonce, encrypted_sender_name = (
-        encrypt_text(
-            sender_name,
-            dek,
-        )
+    # Шифруем имя отправителя.
+    (
+        sender_name_nonce,
+        encrypted_sender_name,
+    ) = encrypt_text(
+        sender_name,
+        dek,
     )
 
+    # Шифруем текст сообщения.
     (
         message_text_nonce,
         encrypted_message_text,
@@ -558,6 +606,7 @@ def save_message(
                 business_connection_id,
                 chat_id,
                 message_id,
+
                 sender_id,
 
                 sender_name,
@@ -572,14 +621,20 @@ def save_message(
                 media_type,
                 media_path,
 
-                created_at
+                created_at,
+
+                reply_to_message_id
             )
+
             VALUES (
-                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?,
                 NULL, NULL,
                 ?, ?,
                 ?, ?,
-                ?, ?, ?
+                ?, ?,
+                ?,
+                ?
             )
 
             ON CONFLICT (
@@ -618,6 +673,12 @@ def save_message(
                     messages.media_path
                 ),
 
+                reply_to_message_id =
+                    COALESCE(
+                        excluded.reply_to_message_id,
+                        messages.reply_to_message_id
+                    ),
+
                 updated_at =
                     excluded.created_at
             """,
@@ -625,6 +686,7 @@ def save_message(
                 business_connection_id,
                 chat_id,
                 message_id,
+
                 sender_id,
 
                 encrypted_sender_name,
@@ -637,8 +699,15 @@ def save_message(
                 media_path,
 
                 created_at,
+
+                reply_to_message_id,
             ),
         )
+
+
+# =========================================================
+# GET MESSAGE
+# =========================================================
 
 
 def get_message(
@@ -675,6 +744,10 @@ def get_message(
         business_connection_id
     )
 
+    # ---------------------------
+    # Sender name
+    # ---------------------------
+
     encrypted_sender_name = result.get(
         "encrypted_sender_name"
     )
@@ -687,11 +760,16 @@ def get_message(
         encrypted_sender_name is not None
         and sender_name_nonce is not None
     ):
+
         result["sender_name"] = decrypt_text(
             encrypted_sender_name,
             sender_name_nonce,
             dek,
         )
+
+    # ---------------------------
+    # Message text
+    # ---------------------------
 
     encrypted_message_text = result.get(
         "encrypted_message_text"
@@ -705,13 +783,15 @@ def get_message(
         encrypted_message_text is not None
         and message_text_nonce is not None
     ):
+
         result["message_text"] = decrypt_text(
             encrypted_message_text,
             message_text_nonce,
             dek,
         )
 
-    # Не отдаём ciphertext наружу.
+    # Ciphertext наружу не отдаём.
+
     result.pop(
         "encrypted_sender_name",
         None,
@@ -736,7 +816,7 @@ def get_message(
 
 
 # =========================================================
-# MESSAGE STATUS
+# MARK DELETED
 # =========================================================
 
 
