@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from config import KEY_PART_A, KEY_PART_B_PATH
+from config import ENCRYPTION_KEY
 from crypto import (
     decrypt_dek,
     decrypt_text,
@@ -25,15 +25,7 @@ DB_PATH = BASE_DIR / "messages.db"
 # MASTER KEK
 # =========================================================
 
-# KEY_PART_A берётся из .env
-# KEY_PART_B берётся из ~/.message_tracker/key.part
-
-KEY_PART_B = KEY_PART_B_PATH.read_bytes().strip()
-
-MASTER_KEK_BYTES = derive_master_kek(
-    KEY_PART_A,
-    KEY_PART_B,
-)
+MASTER_KEK_BYTES = derive_master_kek(ENCRYPTION_KEY)
 
 
 # =========================================================

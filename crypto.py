@@ -58,28 +58,12 @@ def key_from_base64(
 
 
 def derive_master_kek(
-    part_a: str,
-    part_b: bytes,
+    secret_key: str,
 ) -> bytes:
     """
-    Собирает MASTER KEK из двух независимых частей.
-
-    KEY_PART_A:
-        хранится в .env
-
-    KEY_PART_B:
-        хранится отдельно от проекта
-        в ~/.message_tracker/key.part
-
-    Готовый MASTER KEK нигде не сохраняется.
-    Он создаётся только во время работы приложения.
+    Создает MASTER KEK из одного ключа ENCRYPTION_KEY,
+    который берется из переменных окружения.
     """
-
-    material = (
-        part_a.encode("utf-8")
-        + b":"
-        + part_b
-    )
 
     return HKDF(
         algorithm=hashes.SHA256(),
@@ -92,7 +76,7 @@ def derive_master_kek(
 
         info=b"master-kek",
 
-    ).derive(material)
+    ).derive(secret_key.encode("utf-8"))
 
 
 # =========================================================
