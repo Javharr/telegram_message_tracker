@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -63,7 +63,9 @@ def current_time() -> str:
 
 
 def formatted_time() -> str:
-    return datetime.now().strftime(
+    # Исправлено: добавляем +5 часов (местное время для Ташкента)
+    local_time = datetime.now(timezone.utc) + timedelta(hours=5)
+    return local_time.strftime(
         "%d.%m.%Y в %H:%M"
     )
 
