@@ -48,8 +48,12 @@ logging.basicConfig(
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# =========================================================
+# ПУТИ К ФАЙЛАМ (С ПОДДЕРЖКОЙ VOLUME НА RAILWAY)
+# =========================================================
 BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "media"
+DATA_DIR = Path("/app/data") if Path("/app/data").exists() else BASE_DIR
+MEDIA_DIR = DATA_DIR / "media"
 
 
 def current_time() -> str:
