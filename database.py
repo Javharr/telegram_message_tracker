@@ -18,7 +18,9 @@ from crypto import (
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "messages.db"
+# База — на Volume Railway, иначе стирается при каждом деплое.
+DATA_DIR = Path("/app/data") if Path("/app/data").exists() else BASE_DIR
+DB_PATH = DATA_DIR / "messages.db"
 
 
 # =========================================================

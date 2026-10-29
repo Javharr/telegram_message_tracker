@@ -55,6 +55,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path("/app/data") if Path("/app/data").exists() else BASE_DIR
 MEDIA_DIR = DATA_DIR / "media"
 
+# Сколько дней хранить скачанные медиа на Volume.
+MEDIA_KEEP_DAYS = 30
+
 
 def current_time() -> str:
     return datetime.now(
@@ -1443,6 +1446,47 @@ async def handle_deleted_business_messages(
         )
 
 
+def cleanup_old_media() -> None:
+    border = (
+        datetime.now().timestamp()
+        - MEDIA_KEEP_DAYS * 86400
+    )
+    removed = 0
+
+    for path in MEDIA_DIR.rglob("*"):
+        try:
+            if (
+                path.is_file()
+                and path.stat().st_mtime < border
+            ):
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+
+    for folder in sorted(
+        MEDIA_DIR.rglob("*"),
+        reverse=True,
+    ):
+        if folder.is_dir():
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+
+    if removed:
+        logging.info(
+            "Удалено старых медиа: %s",
+            removed,
+        )
+
+
+async def media_cleanup_loop() -> None:
+    while True:
+        await asyncio.to_thread(cleanup_old_media)
+        await asyncio.sleep(6 * 3600)
+
+
 async def main() -> None:
     create_tables()
 
@@ -1500,6 +1544,10 @@ async def main() -> None:
 
     await bot.delete_webhook(
         drop_pending_updates=True,
+    )
+
+    cleanup_task = asyncio.create_task(
+        media_cleanup_loop()
     )
 
     await dp.start_polling(
